@@ -1,1 +1,1 @@
-from .experiment_buddy import deploy, register_defaults
+from .experiment_buddy import *

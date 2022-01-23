@@ -14,7 +14,6 @@ from typing import Dict
 import cloudpickle
 import fabric
 import git
-import matplotlib.pyplot as plt
 import tensorboardX
 import tqdm
 import wandb
@@ -145,6 +144,7 @@ class WandbWrapper:
             self.add_scalar(prefix + k, v, global_step)
 
     def add_figure(self, tag, figure, global_step, close=True):
+        import matplotlib.pyplot as plt
         self.run.log({tag: figure}, global_step)
         if close:
             plt.close(figure)
@@ -163,6 +163,7 @@ class WandbWrapper:
             wandb.log({tag: wandb.Histogram(values)}, step=global_step, commit=False)
 
     def plot(self, tag, values, global_step):
+        import matplotlib.pyplot as plt
         wandb.log({tag: wandb.Image(values)}, step=global_step, commit=False)
         plt.close()
 
