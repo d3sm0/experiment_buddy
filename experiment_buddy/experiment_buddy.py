@@ -1,5 +1,6 @@
 import argparse
 import datetime
+import json
 import logging
 import os
 import random
@@ -26,6 +27,13 @@ from invoke import UnexpectedExit
 from paramiko.ssh_exception import SSHException
 
 import experiment_buddy.utils
+
+try:
+    from orion.client import build_experiment
+except ImportError:
+    ORION_ENABLED = False
+else:
+    ORION_ENABLED = True
 
 try:
     import torch
@@ -84,8 +92,54 @@ def register_defaults(config_params):
     for k, v in vars(parsed).items():
         k = k.lstrip(wandb_escape)
         config_params[k] = v
+    if "sweep_definition" in config_params.keys() and _is_running_on_cluster():
+        # Note: we could enable local sweep now
+        sweep_params = update_config_from_sweep_params(config_params["sweep_definition"])
+        config_params.update(sweep_params)
 
     hyperparams = config_params.copy()
+
+
+def update_config_from_sweep_params(sweep_definition: str):
+    task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", 0))
+    fname = f"task_id={task_id}.json"
+    is_master = int(os.environ.get("SLURM_PROC_ID", 0)) == 0
+    if not os.path.exists(fname) and is_master:
+        experiment, trial = get_sweep_params(sweep_definition)
+        sweep_params = {
+            "orion_id": experiment.name,
+            "trial_id": trial.id,
+            **trial.params
+        }
+        with open(fname, "w") as f:
+            json.dump(sweep_params, f)
+    else:
+        while True:
+            try:
+                with open(fname, "r") as f:
+                    sweep_params = json.load(f)
+                break
+            except FileNotFoundError:
+                time.sleep(1)
+                print("waiting for sweep params to be written")
+    return sweep_params
+
+
+def get_sweep_params(sweep_definition: str):
+    hash_commit = git.Repo().head.commit.hexsha
+    with open(sweep_definition) as f:
+        sweep_definition = yaml.safe_load(f)
+    experiment = build_experiment(hash_commit, algorithms=sweep_definition["algorithms"],
+                                  space=sweep_definition["space"],
+                                  storage=sweep_definition["storage"], max_trials=1)
+    trial = experiment.suggest()
+    experiment.release(trial, status="reserved")
+    experiment.close()
+    return experiment, trial
+
+
+def _is_running_on_cluster():
+    return "SLURM_JOB_ID" in os.environ.keys() or "BUDDY_IS_DEPLOYED" in os.environ.keys()
 
 
 def _is_valid_hyperparam(key, value):
@@ -138,6 +192,13 @@ class WandbWrapper:
 
         for k, v in hyperparams.items():
             register_param(k, v)
+
+        if "sweep_definition" in hyperparams.keys():
+            # we don't really need to this here, as orion will only be called upon closing.
+            with open(hyperparams["sweep_definition"]) as f:
+                sweep_config = yaml.safe_load(f)
+            self.orion_experiment = build_experiment(hyperparams["orion_id"], storage=sweep_config["storage"])
+            self.sweep_objective = sweep_config["objective"]
 
     def add_scalar(self, tag: str, scalar_value: float, global_step: Optional[int] = None):
         if scalar_value != scalar_value:
@@ -192,7 +253,14 @@ class WandbWrapper:
         self.run.watch(*args, **kwargs)
 
     def close(self):
-        pass
+        self.dump()
+        if hasattr(self, "orion_experiment"):
+            value = self.run.summary.get(self.sweep_objective)
+            if value is None:
+                warnings.warn(f"Wandb did not compute summary for {self.sweep_objective}.")
+                value = 0
+            result = [{"name": self.sweep_objective, "type": "objective", "value": value}]
+            report_to_orion(self.orion_experiment, trial_id=self.run.config["^trial_id"], result=result)
 
     def record(self, tag, value, global_step=None, exclude=None):
         # Let wandb figure it out.
@@ -200,6 +268,18 @@ class WandbWrapper:
 
     def dump(self, step=None):
         self.run.log({}, step=step, commit=True)
+
+
+def report_to_orion(orion_experiment, trial_id, result):
+    orion_trial = orion_experiment.get_trial(uid=trial_id)
+    try:
+        orion_experiment.observe(orion_trial, results=result)
+    except Exception as e:
+        print(e)
+        # creation and reservation happens in two seperate processes as such
+        # the pacemaker of the creator process does not exist here
+    finally:
+        orion_experiment.close()
 
 
 def deploy(host: str = "", sweep_definition: Union[str, tuple] = "", proc_num: int = 1, wandb_kwargs=None,
@@ -233,7 +313,7 @@ def deploy(host: str = "", sweep_definition: Union[str, tuple] = "", proc_num: i
 
     extra_slurm_headers = extra_slurm_headers.strip()
     debug = sys.gettrace() is not None and not os.environ.get('BUDDY_DEBUG_DEPLOYMENT', False)
-    running_on_cluster = "SLURM_JOB_ID" in os.environ.keys() or "BUDDY_IS_DEPLOYED" in os.environ.keys()
+    running_on_cluster = _is_running_on_cluster()
     local_run = not host and not running_on_cluster
 
     try:
@@ -405,7 +485,7 @@ def _commit_and_sendjob(hostname: str, experiment_id: str, sweep_definition: str
         allocate_interactive(entrypoint, experiment_id, extra_modules, git_url, hash_commit,
                              project_name, scripts_folder, ssh_session, wandb_kwargs)
     else:
-        send_jobs(entrypoint, experiment_id, extra_modules, git_url, hash_commit, extra_slurm_header,
+        send_jobs(entrypoint, experiment_id, extra_modules, git_url, hash_commit,
                   proc_num, project_name, scripts_folder, ssh_session, sweep_definition, wandb_kwargs, count_per_agent)
 
 
@@ -433,17 +513,14 @@ def allocate_interactive(entrypoint, experiment_id, extra_modules, git_url, hash
 
 
 def send_jobs(
-        entrypoint, experiment_id, extra_modules, git_url, hash_commit, extra_slurm_header,
+        entrypoint, experiment_id, extra_modules, git_url, hash_commit,
         proc_num, project_name, scripts_folder, ssh_session, sweep_definition, wandb_kwargs, count_per_agent):
+    ssh_command = f"bash -l {scripts_folder}/run_experiment.sh {git_url} {entrypoint} {hash_commit} {extra_modules}"
     if sweep_definition:
-        if isinstance(sweep_definition, str):
-            sweep_id = _load_sweep(entrypoint, experiment_id, project_name, sweep_definition, wandb_kwargs)
-        else:
-            sweep_id, hash_commit = sweep_definition  # TODO: this branch should query wandb for the old parameters {git_url}, {hash_commit} and possibly {extra_modules}
-        ssh_command = f"/opt/slurm/bin/sbatch {scripts_folder}/run_sweep.sh {git_url} {sweep_id} {hash_commit} {extra_modules} {count_per_agent}"
-    else:
-        ssh_command = f"bash -l {scripts_folder}/run_experiment.sh {git_url} {entrypoint} {hash_commit} {extra_modules}"
-        print("monitor your run on https://wandb.ai/")
+        sweep_id, backend = _load_sweep(entrypoint, experiment_id, project_name, sweep_definition, wandb_kwargs)
+        if backend == "wandb":
+            ssh_command = f"/opt/slurm/bin/sbatch {scripts_folder}/run_sweep.sh {git_url} {sweep_id} {hash_commit} {extra_modules} {count_per_agent}"
+    print("monitor your run on https://wandb.ai/")
     print(ssh_command)
     for _ in tqdm.trange(proc_num):
         time.sleep(1)
@@ -468,6 +545,11 @@ def commit(experiment_id, extra_modules, extra_slurm_header, git_repo, hostname)
 def _load_sweep(entrypoint, experiment_id, project, sweep_yaml, wandb_kwargs):
     with open(sweep_yaml, 'r') as stream:
         data_loaded = yaml.safe_load(stream)
+
+    if data_loaded["backend"] == "orion":
+        if not ORION_ENABLED:
+            raise ImportError("Orion backend is not enabled")
+        return None, "orion"
 
     if data_loaded["program"] != entrypoint:
         raise ValueError(f'YAML {data_loaded["program"]} does not match the entrypoint {entrypoint}')
