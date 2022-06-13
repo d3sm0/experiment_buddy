@@ -106,8 +106,9 @@ def register_defaults(config_params, allow_overwrite=False):
 def update_config_from_sweep_params(sweep_definition: str):
     task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", 0))
     fname = f"task_id={task_id}.json"
-    is_master = int(os.environ.get("SLURM_PROC_ID", 0)) == 0
-    if not os.path.exists(fname) and is_master:
+    rank = int(os.environ["SLURM_PROCID"])
+    print(f"task {rank} with rank {rank} is asking params.")
+    if rank == 0:  # only master master process ask params
         experiment, trial = get_sweep_params(sweep_definition)
         sweep_params = {
             "orion_id": experiment.name,
@@ -123,7 +124,7 @@ def update_config_from_sweep_params(sweep_definition: str):
                     sweep_params = json.load(f)
                 break
             except FileNotFoundError:
-                time.sleep(1)
+                time.sleep(5)
                 print("waiting for sweep params to be written")
     return sweep_params
 
@@ -132,12 +133,18 @@ def get_sweep_params(sweep_definition: str):
     hash_commit = git.Repo().head.commit.hexsha
     with open(sweep_definition) as f:
         sweep_definition = yaml.safe_load(f)
+
+    if _is_running_on_cluster():
+        if sweep_definition["storage"]["database"]["type"] == "pickleddb":
+            sweep_definition["storage"]["host"] = os.path.join(os.path.expanduser("~"), "scratch",
+                                                               sweep_definition["storage"]["host"])
     experiment = build_experiment(hash_commit, algorithms=sweep_definition["algorithms"],
                                   space=sweep_definition["space"],
                                   storage=sweep_definition["storage"], max_trials=1)
     trial = experiment.suggest()
     experiment.release(trial, status="reserved")
     experiment.close()
+    print(f"Created new trial: {trial.params}")
     return experiment, trial
 
 
@@ -196,7 +203,7 @@ class WandbWrapper:
         for k, v in hyperparams.items():
             register_param(k, v)
 
-        if "sweep_definition" in hyperparams.keys():
+        if "sweep_definition" in hyperparams.keys() and _is_running_on_cluster():
             # we don't really need to this here, as orion will only be called upon closing.
             with open(hyperparams["sweep_definition"]) as f:
                 sweep_config = yaml.safe_load(f)
