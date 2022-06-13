@@ -134,9 +134,6 @@ def get_sweep_params(sweep_definition: str):
     with open(sweep_definition) as f:
         sweep_definition = yaml.safe_load(f)
 
-    if _is_running_on_cluster():
-        if sweep_definition["storage"]["database"]["type"] == "pickleddb":
-            sweep_definition["storage"]["database"]["host"] = os.path.join(os.path.expanduser("~"), "scratch", sweep_definition["storage"]["database"]["host"])
     experiment = build_experiment(hash_commit, algorithms=sweep_definition["algorithms"],
                                   space=sweep_definition["space"],
                                   storage=sweep_definition["storage"], max_trials=1)
