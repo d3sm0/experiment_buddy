@@ -136,7 +136,7 @@ def get_sweep_params(sweep_definition: str):
 
     experiment = build_experiment(hash_commit, algorithms=sweep_definition["algorithms"],
                                   space=sweep_definition["space"],
-                                  storage=sweep_definition["storage"], max_trials=1)
+                                  storage=sweep_definition["storage"])
     trial = experiment.suggest()
     experiment.release(trial, status="reserved")
     experiment.close()
