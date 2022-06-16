@@ -133,6 +133,8 @@ def get_sweep_params(sweep_definition: str):
     hash_commit = git.Repo().head.commit.hexsha
     with open(sweep_definition) as f:
         sweep_definition = yaml.safe_load(f)
+        # if the user specify orion_id we can resume training
+        hash_commit = sweep_definition.get("orion_id", hash_commit)
 
     experiment = build_experiment(hash_commit, algorithms=sweep_definition["algorithms"],
                                   space=sweep_definition["space"],
