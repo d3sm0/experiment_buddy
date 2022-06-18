@@ -107,8 +107,8 @@ def update_config_from_sweep_params(sweep_definition: str):
     task_id = int(os.environ.get("SLURM_ARRAY_TASK_ID", 0))
     fname = f"task_id={task_id}.json"
     rank = int(os.environ["SLURM_PROCID"])
-    print(f"task {rank} with rank {rank} is asking params.")
     if rank == 0:  # only master master process ask params
+        print(f"task {rank} with rank {rank} is asking params.")
         experiment, trial = get_sweep_params(sweep_definition)
         sweep_params = {
             "orion_id": experiment.name,
