@@ -129,7 +129,7 @@ def update_config_from_sweep_params(sweep_definition: str):
     return sweep_params
 
 
-def get_sweep_params(sweep_definition: str):
+def get_sweep_params(sweep_definition: str, max_attempts=5):
     hash_commit = git.Repo().head.commit.hexsha
     with open(sweep_definition) as f:
         sweep_definition = yaml.safe_load(f)
@@ -139,7 +139,16 @@ def get_sweep_params(sweep_definition: str):
     experiment = build_experiment(hash_commit, algorithms=sweep_definition["algorithms"],
                                   space=sweep_definition["space"],
                                   storage=sweep_definition["storage"])
-    trial = experiment.suggest()
+    # this might generate a race condition if multiple processes are querying the DB at the same time
+    # Orion handles only 1 of these cases, we can retry and sleep in between.
+    trial = None
+    for _ in range(max_attempts):
+        try:
+            trial = experiment.suggest()
+            break
+        except Exception as e:
+            print(f"Error while suggesting trial: {e}")
+            time.sleep(5)
     experiment.release(trial, status="reserved")
     experiment.close()
     print(f"Created new trial: {trial.params}")
