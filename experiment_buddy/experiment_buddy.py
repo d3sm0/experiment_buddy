@@ -137,8 +137,8 @@ def get_sweep_params(sweep_definition: str, max_attempts=5):
         hash_commit = sweep_definition.get("orion_id", hash_commit)
 
     storage = sweep_definition["storage"]
-    if storage["type"] == "pickleddb" and _is_running_on_cluster():
-        storage["host"] = os.path.join(os.path.expanduser("~"), storage["host"])
+    if storage["database"]["type"] == "pickleddb" and _is_running_on_cluster():
+        storage["database"]["host"] = os.path.join(os.path.expanduser("~"), storage["database"]["host"])
     experiment = build_experiment(hash_commit, algorithms=sweep_definition["algorithms"],
                                   space=sweep_definition["space"],
                                   storage=storage)
