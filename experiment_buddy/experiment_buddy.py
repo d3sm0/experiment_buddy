@@ -128,6 +128,12 @@ def update_config_from_sweep_params(sweep_definition: str):
                 print("waiting for sweep params to be written")
     return sweep_params
 
+def parse_storage_host(storage):
+    if storage["database"]["type"] == "pickleddb" and _is_running_on_cluster():
+        storage["database"]["host"] = os.path.join(os.path.expanduser("~"), storage["database"]["host"])
+    print(f"connecting to {storage['database']['host']}")
+    return storage
+
 
 def get_sweep_params(sweep_definition: str, max_attempts=5):
     hash_commit = git.Repo().head.commit.hexsha
@@ -136,13 +142,9 @@ def get_sweep_params(sweep_definition: str, max_attempts=5):
         # if the user specify orion_id we can resume training
         hash_commit = sweep_definition.get("orion_id", hash_commit)
 
-    storage = sweep_definition["storage"]
-    if storage["database"]["type"] == "pickleddb" and _is_running_on_cluster():
-        storage["database"]["host"] = os.path.join(os.path.expanduser("~"), storage["database"]["host"])
-    print(f"connecting to {storage['database']['host']}")
     experiment = build_experiment(hash_commit, algorithms=sweep_definition["algorithms"],
                                   space=sweep_definition["space"],
-                                  storage=storage)
+                                  storage=parse_storage_host(sweep_definition["storage"]))
     # this might generate a race condition if multiple processes are querying the DB at the same time
     # Orion handles only 1 of these cases, we can retry and sleep in between.
     trial = None
@@ -218,7 +220,7 @@ class WandbWrapper:
             # we don't really need to this here, as orion will only be called upon closing.
             with open(hyperparams["sweep_definition"]) as f:
                 sweep_config = yaml.safe_load(f)
-            self.orion_experiment = build_experiment(hyperparams["orion_id"], storage=sweep_config["storage"])
+            self.orion_experiment = build_experiment(hyperparams["orion_id"], storage=parse_storage_host(sweep_config["storage"]))
             self.sweep_objective = sweep_config["objective"]
 
     def add_scalar(self, tag: str, scalar_value: float, global_step: Optional[int] = None):
