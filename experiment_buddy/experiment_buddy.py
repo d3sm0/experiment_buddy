@@ -139,6 +139,7 @@ def get_sweep_params(sweep_definition: str, max_attempts=5):
     storage = sweep_definition["storage"]
     if storage["database"]["type"] == "pickleddb" and _is_running_on_cluster():
         storage["database"]["host"] = os.path.join(os.path.expanduser("~"), storage["database"]["host"])
+    print(f"connecting to {storage['database']['host']}")
     experiment = build_experiment(hash_commit, algorithms=sweep_definition["algorithms"],
                                   space=sweep_definition["space"],
                                   storage=storage)
