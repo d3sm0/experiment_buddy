@@ -108,7 +108,7 @@ def update_config_from_sweep_params(sweep_definition: str):
     fname = f"task_id={task_id}.json"
     rank = int(os.environ["SLURM_PROCID"])
     if rank == 0:  # only master master process ask params
-        print(f"task {rank} with rank {rank} is asking params.")
+        logging.info(f"task {rank} with rank {rank} is asking params.")
         experiment, trial = get_sweep_params(sweep_definition)
         sweep_params = {
             "orion_id": experiment.name,
@@ -125,13 +125,14 @@ def update_config_from_sweep_params(sweep_definition: str):
                 break
             except FileNotFoundError:
                 time.sleep(5)
-                print("waiting for sweep params to be written")
+                logging.info("waiting for sweep params to be written")
     return sweep_params
+
 
 def parse_storage_host(storage):
     if storage["database"]["type"] == "pickleddb" and _is_running_on_cluster():
         storage["database"]["host"] = os.path.join(os.path.expanduser("~"), storage["database"]["host"])
-    print(f"connecting to {storage['database']['host']}")
+    logging.info(f"connecting to {storage['database']['host']}")
     return storage
 
 
@@ -153,11 +154,11 @@ def get_sweep_params(sweep_definition: str, max_attempts=5):
             trial = experiment.suggest()
             break
         except Exception as e:
-            print(f"Error while suggesting trial: {e}")
+            logging.info(f"Error while suggesting trial: {e}")
             time.sleep(5)
     experiment.release(trial, status="reserved")
     experiment.close()
-    print(f"Created new trial: {trial.params}")
+    logging.info(f"Created new trial: {trial.params}")
     return experiment, trial
 
 
@@ -221,7 +222,7 @@ class WandbWrapper:
             with open(hyperparams["sweep_definition"]) as f:
                 sweep_config = yaml.safe_load(f)
             self.orion_experiment = build_experiment(hyperparams["orion_id"], storage=parse_storage_host(sweep_config["storage"]))
-            self.sweep_objective = sweep_config["objective"]
+            self.sweep_objective_key = sweep_config["objective"]
 
     def add_scalar(self, tag: str, scalar_value: float, global_step: Optional[int] = None):
         if scalar_value != scalar_value:
@@ -278,11 +279,11 @@ class WandbWrapper:
     def close(self):
         self.dump()
         if hasattr(self, "orion_experiment"):
-            value = self.run.summary.get(self.sweep_objective)
+            value = self.run.summary.get(self.sweep_objective_key)
             if value is None:
-                warnings.warn(f"Wandb did not compute summary for {self.sweep_objective}.")
-                value = 0
-            result = [{"name": self.sweep_objective, "type": "objective", "value": value}]
+                warnings.warn(f"Wandb did not compute summary for {self.sweep_objective_key}.")
+                value = float('nan')
+            result = [{"name": self.sweep_objective_key, "type": "objective", "value": value}]
             report_to_orion(self.orion_experiment, trial_id=self.run.config["^trial_id"], result=result)
 
     def record(self, tag, value, global_step=None, exclude=None):
@@ -298,7 +299,7 @@ def report_to_orion(orion_experiment, trial_id, result):
     try:
         orion_experiment.observe(orion_trial, results=result)
     except Exception as e:
-        print(e)
+        logging.error(e)
         # creation and reservation happens in two seperate processes as such
         # the pacemaker of the creator process does not exist here
     finally:
