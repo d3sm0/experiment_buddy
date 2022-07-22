@@ -95,9 +95,11 @@ def register_defaults(config_params, allow_overwrite=False):
     for k, v in vars(parsed).items():
         k = k.lstrip(wandb_escape)
         config_params[k] = v
-    if "sweep_definition" in config_params.keys() and _is_running_on_cluster():
+
+    sweep_definition = config_params.get("sweep_definition")
+    if sweep_definition and _is_running_on_cluster():
         # Note: we could enable local sweep now
-        sweep_params = update_config_from_sweep_params(config_params["sweep_definition"])
+        sweep_params = update_config_from_sweep_params(sweep_definition)
         config_params.update(sweep_params)
 
     hyperparams = config_params.copy()
@@ -146,20 +148,32 @@ def get_sweep_params(sweep_definition: str, max_attempts=5):
     experiment = build_experiment(hash_commit, algorithms=sweep_definition["algorithms"],
                                   space=sweep_definition["space"],
                                   storage=parse_storage_host(sweep_definition["storage"]))
-    # this might generate a race condition if multiple processes are querying the DB at the same time
-    # Orion handles only 1 of these cases, we can retry and sleep in between.
-    trial = None
-    for _ in range(max_attempts):
-        try:
-            trial = experiment.suggest()
-            break
-        except Exception as e:
-            logging.info(f"Error while suggesting trial: {e}")
-            time.sleep(5)
+    trial = generate_trial(experiment, max_attempts)
     experiment.release(trial, status="reserved")
     experiment.close()
     logging.info(f"Created new trial: {trial.params}")
     return experiment, trial
+
+
+def generate_trial(experiment, max_attempts):
+    # Generate trials with multiple ongoing runners (e.g. mp, arrays etc..) might cause a race condition
+    # when querying the database. In all other cases we capture the exception and exit gracefully.
+    from orion.core.utils.exceptions import WaitingForTrials, ReservationRaceCondition
+    trial = None
+    for attempt in range(max_attempts):
+        try:
+            trial = experiment.suggest()
+            break
+        except ReservationRaceCondition:
+            logging.info(f"Race condition while suggesting trial. Retry {attempt}/{max_attempts}")
+            time.sleep(5)
+        except (WaitingForTrials, Exception) as e:
+            logging.critical("No more trials.", exc_info=e)
+            break
+    if trial is None:
+        logging.error("Failed to generate trial. Exiting.")
+        sys.exit(0)
+    return trial
 
 
 def _is_running_on_cluster():
@@ -217,11 +231,13 @@ class WandbWrapper:
         for k, v in hyperparams.items():
             register_param(k, v)
 
-        if "sweep_definition" in hyperparams.keys() and _is_running_on_cluster():
+        sweep_definition = hyperparams.get("sweep_definition", "")
+        if sweep_definition and _is_running_on_cluster():
             # we don't really need to this here, as orion will only be called upon closing.
             with open(hyperparams["sweep_definition"]) as f:
                 sweep_config = yaml.safe_load(f)
-            self.orion_experiment = build_experiment(hyperparams["orion_id"], storage=parse_storage_host(sweep_config["storage"]))
+            self.orion_experiment = build_experiment(hyperparams["orion_id"],
+                                                     storage=parse_storage_host(sweep_config["storage"]))
             self.sweep_objective_key = sweep_config["objective"]
 
     def add_scalar(self, tag: str, scalar_value: float, global_step: Optional[int] = None):
@@ -393,7 +409,8 @@ def deploy(host: str = "", sweep_definition: Union[str, tuple] = "", proc_num: i
             tb_dir = os.path.join(git_repo.working_dir, ARTIFACTS_PATH, "tensorboard/", experiment_id, dtm)
             return WandbWrapper(f"{experiment_id}_{dtm}", local_tensorboard=_setup_tb(logdir=tb_dir), **common_kwargs)
         else:
-            _commit_and_sendjob(host, experiment_id, sweep_definition, git_repo, project_name, proc_num, extra_slurm_headers,
+            _commit_and_sendjob(host, experiment_id, sweep_definition, git_repo, project_name, proc_num,
+                                extra_slurm_headers,
                                 wandb_kwargs, extra_modules, interactive, run_per_agent)
             sys.exit()
 
@@ -410,7 +427,8 @@ def ensure_torch_compatibility():
         matches = re.search(r"torch==.*cu.*", reqs)
         if "torch" in reqs and not matches:
             # https://mila-umontreal.slack.com/archives/CFAS8455H/p1624292393273100?thread_ts=1624290747.269100&cid=CFAS8455H
-            warnings.warn("""torch rocm4.2 version will be installed on the cluster which is not supported specify torch==1.7.1+cu110 in requirements.txt instead""")
+            warnings.warn(
+                """torch rocm4.2 version will be installed on the cluster which is not supported specify torch==1.7.1+cu110 in requirements.txt instead""")
 
 
 def _ask_experiment_id(cluster, sweep):
@@ -501,7 +519,8 @@ def log_cmd(cmd, retr):
 
 
 def _commit_and_sendjob(hostname: str, experiment_id: str, sweep_definition: str, git_repo: git.Repo, project_name: str,
-                        proc_num: int, extra_slurm_header: str, wandb_kwargs: dict, extra_modules=List[str], interactive=False, count_per_agent=None):
+                        proc_num: int, extra_slurm_header: str, wandb_kwargs: dict, extra_modules=List[str],
+                        interactive=False, count_per_agent=None):
     entrypoint, extra_modules, git_url, hash_commit, scripts_folder, ssh_session = commit(
         experiment_id, extra_modules, extra_slurm_header, git_repo, hostname)
 
