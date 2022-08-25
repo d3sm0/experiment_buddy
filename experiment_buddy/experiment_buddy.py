@@ -18,7 +18,7 @@ import fabric
 import git
 import matplotlib.pyplot as plt
 import requests
-import tensorboardX
+# import tensorboardX
 import tqdm
 import wandb
 import wandb.cli
