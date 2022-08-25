@@ -343,7 +343,8 @@ def deploy(host: str = "", sweep_definition: Union[str, tuple] = "", proc_num: i
     if extra_modules is None:
         extra_modules = [
             "python/3.7",
-            "pytorch/1.7",
+            "pytorch/1.7"
+            "libffi",
         ]
     if not any("python" in m for m in extra_modules):
         warnings.warn("No python module found, are you sure?")
