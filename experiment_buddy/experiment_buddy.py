@@ -18,7 +18,6 @@ import fabric
 import git
 import matplotlib.pyplot as plt
 import requests
-# import tensorboardX
 import tqdm
 import wandb
 import wandb.cli
@@ -380,7 +379,7 @@ def deploy(host: str = "", sweep_definition: Union[str, tuple] = "", proc_num: i
     if disabled:
         tb_dir = os.path.join(git_repo.working_dir, ARTIFACTS_PATH, "tensorboard", "DISABLED", dtm)
         wandb_kwargs["mode"] = "disabled"
-        logger = WandbWrapper(f"buddy_disabled_{dtm}", local_tensorboard=_setup_tb(logdir=tb_dir), **common_kwargs)
+        logger = WandbWrapper(f"buddy_disabled_{dtm}", local_tensorboard=None, **common_kwargs)
     elif running_on_cluster:
         if interactive:
             with open("~/buddy_remote_debugger", "r") as fin:
