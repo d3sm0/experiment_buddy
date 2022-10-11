@@ -1,4 +1,3 @@
-import argparse
 import datetime
 import json
 import logging
@@ -45,7 +44,7 @@ else:
 logging.basicConfig(level=logging.INFO)
 
 wandb_escape = "^"
-hyperparams: Optional[Dict] = None
+# hyperparams: Optional[Dict] = None
 tb = tensorboard = None
 if os.path.exists("buddy_scripts/"):
     SCRIPTS_PATH = "buddy_scripts/"
@@ -55,53 +54,53 @@ ARTIFACTS_PATH = "runs/"
 DEFAULT_WANDB_KEY = os.path.join(os.environ["HOME"], ".netrc")
 
 
-def register(config_params):
-    warnings.warn("Use register_defaults() instead")
-    return register_defaults(config_params)
-
-
-def register_defaults(config_params, allow_overwrite=False):
-    global hyperparams
-    # TODO: fails on nested config object
-    if allow_overwrite:
-        hyperparams = None
-
-    if hyperparams is not None:
-        raise RuntimeError("refusing to overwrite registered parameters")
-
-    if isinstance(config_params, argparse.Namespace):
-        raise Exception("Need a dict, use var() or locals()")
-
-    parser = argparse.ArgumentParser()
-    parser.add_argument('_ignored', nargs='*')
-
-    for k, v in config_params.items():
-        if k.startswith(wandb_escape):
-            raise NameError(f"{wandb_escape} is a reserved prefix")
-        if _is_valid_hyperparam(k, v):
-            parser.add_argument(f"--{k}", f"--^{k}", type=type(v), default=v)
-            if "_" in k:
-                k = k.replace("_", "-")
-                parser.add_argument(f"--{k}", f"--^{k}", type=type(v), default=v)
-
-    try:
-        parsed = parser.parse_args()
-    except TypeError as e:
-        print("Type mismatch between registered hyperparameters defaults and actual values,"
-              " it might be a float argument that was passed as an int (e.g. lr=1 rather than lr=1.0) but set as a float (--lr 0.1)")
-        raise e
-
-    for k, v in vars(parsed).items():
-        k = k.lstrip(wandb_escape)
-        config_params[k] = v
-
-    sweep_definition = config_params.get("sweep_definition")
-    if sweep_definition and _is_running_on_cluster():
-        # Note: we could enable local sweep now
-        sweep_params = update_config_from_sweep_params(sweep_definition)
-        config_params.update(sweep_params)
-
-    hyperparams = config_params.copy()
+# def register(config_params):
+#     warnings.warn("Use register_defaults() instead")
+#     return register_defaults(config_params)
+#
+#
+# def register_defaults(config_params, allow_overwrite=False):
+#     global hyperparams
+#     # TODO: fails on nested config object
+#     if allow_overwrite:
+#         hyperparams = None
+#
+#     if hyperparams is not None:
+#         raise RuntimeError("refusing to overwrite registered parameters")
+#
+#     if isinstance(config_params, argparse.Namespace):
+#         raise Exception("Need a dict, use var() or locals()")
+#
+#     parser = argparse.ArgumentParser()
+#     parser.add_argument('_ignored', nargs='*')
+#
+#     for k, v in config_params.items():
+#         if k.startswith(wandb_escape):
+#             raise NameError(f"{wandb_escape} is a reserved prefix")
+#         if _is_valid_hyperparam(k, v):
+#             parser.add_argument(f"--{k}", f"--^{k}", type=type(v), default=v)
+#             if "_" in k:
+#                 k = k.replace("_", "-")
+#                 parser.add_argument(f"--{k}", f"--^{k}", type=type(v), default=v)
+#
+#     try:
+#         parsed = parser.parse_args()
+#     except TypeError as e:
+#         print("Type mismatch between registered hyperparameters defaults and actual values,"
+#               " it might be a float argument that was passed as an int (e.g. lr=1 rather than lr=1.0) but set as a float (--lr 0.1)")
+#         raise e
+#
+#     for k, v in vars(parsed).items():
+#         k = k.lstrip(wandb_escape)
+#         config_params[k] = v
+#
+#     sweep_definition = config_params.get("sweep_definition")
+#     if sweep_definition and _is_running_on_cluster():
+#         # Note: we could enable local sweep now
+#         sweep_params = update_config_from_sweep_params(sweep_definition)
+#         config_params.update(sweep_params)
+#
+#     hyperparams = config_params.copy()
 
 
 def update_config_from_sweep_params(sweep_definition: str):
@@ -202,34 +201,35 @@ class WandbWrapper:
         self.run = wandb.init(name=experiment_id, **wandb_kwargs)
 
         self.tensorboard = local_tensorboard
+        # TODO: this is now being taken care by hydra
         self.objects_path = os.path.join(ARTIFACTS_PATH, "objects/", self.run.name)
         os.makedirs(self.objects_path, exist_ok=True)
 
-        def register_param(name, value, prefix=""):
-            if not _is_valid_hyperparam(name, value):
-                return
+        # def register_param(name, value, prefix=""):
+        #     if not _is_valid_hyperparam(name, value):
+        #         return
 
-            if name == "_extra_modules_":
-                for module in value:
-                    for __k in dir(module):
-                        __v = getattr(module, __k)
-                        register_param(__k, __v, prefix=module.__name__.replace(".", "_"))
-            else:
-                name = prefix + wandb_escape + name
-                # if the parameter was not set by a sweep
-                if not name in wandb.config._items:
-                    print(f"setting {name}={str(value)}")
-                    setattr(wandb.config, name, str(value))
-                else:
-                    print(
-                        f"not setting {name} to {str(value)}, "
-                        f"str because its already {getattr(wandb.config, name)}, "
-                        f"{type(getattr(wandb.config, name))}"
-                    )
+        #     if name == "_extra_modules_":
+        #         for module in value:
+        #             for __k in dir(module):
+        #                 __v = getattr(module, __k)
+        #                 register_param(__k, __v, prefix=module.__name__.replace(".", "_"))
+        #     else:
+        #         name = prefix + wandb_escape + name
+        #         # if the parameter was not set by a sweep
+        #         if not name in wandb.config._items:
+        #             print(f"setting {name}={str(value)}")
+        #             setattr(wandb.config, name, str(value))
+        #         else:
+        #             print(
+        #                 f"not setting {name} to {str(value)}, "
+        #                 f"str because its already {getattr(wandb.config, name)}, "
+        #                 f"{type(getattr(wandb.config, name))}"
+        #             )
 
-        for k, v in hyperparams.items():
-            register_param(k, v)
-
+        # for k, v in hyperparams.items():
+        #     register_param(k, v)
+        hyperparams = self.run.config
         sweep_definition = hyperparams.get("sweep_definition", "")
         if sweep_definition and _is_running_on_cluster():
             # we don't really need to this here, as orion will only be called upon closing.
@@ -352,7 +352,7 @@ def deploy(host: str = "", sweep_definition: Union[str, tuple] = "", proc_num: i
         raise NotImplementedError("Not implemented yet")
 
     extra_slurm_headers = extra_slurm_headers.strip()
-    debug = sys.gettrace() is not None and not os.environ.get('BUDDY_DEBUG_DEPLOYMENT', False)
+    debug = False  # sys.gettrace() is not None and not os.environ.get('BUDDY_DEBUG_DEPLOYMENT', False)
     running_on_cluster = _is_running_on_cluster()
     local_run = not host and not running_on_cluster
 
@@ -376,7 +376,7 @@ def deploy(host: str = "", sweep_definition: Union[str, tuple] = "", proc_num: i
     common_kwargs = {'debug': debug, 'wandb_kwargs': wandb_kwargs, }
     dtm = datetime.datetime.now().strftime("%b%d_%H-%M-%S")
     logger = None
-
+    # TODO: remove this branching we disable in a different way
     if disabled:
         tb_dir = os.path.join(git_repo.working_dir, ARTIFACTS_PATH, "tensorboard", "DISABLED", dtm)
         wandb_kwargs["mode"] = "disabled"
@@ -397,7 +397,7 @@ def deploy(host: str = "", sweep_definition: Union[str, tuple] = "", proc_num: i
     elif debug and not interactive:
         experiment_id = "DEBUG_RUN"
         tb_dir = os.path.join(git_repo.working_dir, ARTIFACTS_PATH, "tensorboard/", experiment_id, dtm)
-        logger = WandbWrapper(f"{experiment_id}_{dtm}", local_tensorboard=_setup_tb(logdir=tb_dir), **common_kwargs)
+        logger = WandbWrapper(f"{experiment_id}_{dtm}", local_tensorboard=None, **common_kwargs)
     else:
         ensure_torch_compatibility()
         if sweep_definition and isinstance(sweep_definition, tuple):
@@ -407,7 +407,7 @@ def deploy(host: str = "", sweep_definition: Union[str, tuple] = "", proc_num: i
         print(f"experiment_id: {experiment_id}")
         if local_run:
             tb_dir = os.path.join(git_repo.working_dir, ARTIFACTS_PATH, "tensorboard/", experiment_id, dtm)
-            return WandbWrapper(f"{experiment_id}_{dtm}", local_tensorboard=_setup_tb(logdir=tb_dir), **common_kwargs)
+            return WandbWrapper(f"{experiment_id}_{dtm}", local_tensorboard=None, **common_kwargs)
         else:
             _commit_and_sendjob(host, experiment_id, sweep_definition, git_repo, project_name, proc_num,
                                 extra_slurm_headers,
@@ -459,7 +459,9 @@ def _ask_experiment_id(cluster, sweep):
 
 def _setup_tb(logdir):
     print("http://localhost:6006")
-    return tensorboardX.SummaryWriter(logdir=logdir)
+    # TODO: not sure if we want to use aim as a local tb
+    import torch.utils.tensorboard
+    return torch.utils.tensorboard.SummaryWriter(log_dir=logdir)
 
 
 def _open_ssh_session(hostname: str) -> fabric.Connection:
