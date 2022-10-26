@@ -2,6 +2,7 @@ import datetime
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 import warnings
@@ -18,6 +19,7 @@ import yaml
 from invoke import UnexpectedExit
 from paramiko.ssh_exception import SSHException
 
+import experiment_buddy.aws
 import experiment_buddy.utils
 
 try:
@@ -201,15 +203,10 @@ def deploy(host: str = "", sweep_definition: Optional[str] = None, wandb_kwargs:
             wandb_kwargs["name"] = experiment_id + f"_{dtm}"
             return WandbWrapper(wandb_kwargs, local_tensorboard=None, debug=debug)
         else:
-            # ensure we have torch
-            ensure_torch_compatibility()
-            # ensure we can connect
-            ssh_session = _open_ssh_session(host)
-            # TODO: ensure remote venv exists from python side instead of bash. If not create it.
-            # get entrypoint. Warning, hydra changes directory, ensure is properly config.
             git_url = git_repo.remotes[0].url
             entrypoint = os.path.relpath(sys.argv[0], git_repo.working_dir)
 
+            # create entrypoint
             if sweep_definition:
                 # TODO: change to use `python -O -u entrypoint --multirun` instead to wrap any hyperopt
                 sweep_id = _load_sweep(entrypoint, sweep_definition, wandb_kwargs)
@@ -217,11 +214,28 @@ def deploy(host: str = "", sweep_definition: Optional[str] = None, wandb_kwargs:
             else:
                 # TODO: support for distributed training with torchrun
                 entrypoint = f"python -O -u {entrypoint}"
-            # commit to slurm and commit to git
-            scripts_folder, hash_commit = _commit(ssh_session, experiment_id, git_repo, **slurm_kwargs,
-                                                  tag_experiment=tag_experiment)
-            # launch jobs
-            send_jobs(ssh_session, scripts_folder, git_url, hash_commit, entrypoint)
+            # deploy to host
+            if host == "aws":
+                docker_tag = _build_docker(git_repo.working_dir, project_name=wandb_kwargs["project"])
+                job_spec = experiment_buddy.aws.JobSpec(
+                    docker_tag=docker_tag,
+                    cmd=entrypoint.split(" "),
+                    job_requirements=[{"type": "gpu", "count": 1}],
+                    compute_environment="gpu"
+                )
+                experiment_buddy.aws.deploy_aws(experiment_id=experiment_id, job_spec=job_spec)
+            else:
+                # ensure we have torch
+                ensure_torch_compatibility()
+                # ensure we can connect
+                ssh_session = _open_ssh_session(host)
+                # TODO: ensure remote venv exists from python side instead of bash. If not create it.
+                # get entrypoint. Warning, hydra changes directory, ensure is properly config.
+                # commit to slurm and commit to git
+                scripts_folder, hash_commit = _commit(ssh_session, experiment_id, git_repo, **slurm_kwargs,
+                                                      tag_experiment=tag_experiment)
+                # launch jobs
+                send_jobs(ssh_session, scripts_folder, git_url, hash_commit, entrypoint)
             sys.exit()
 
     return logger
@@ -412,3 +426,13 @@ def git_sync(experiment_id, repo: git.Repo) -> str:
     finally:
         repo.git.checkout(active_branch)
     return git_hash
+
+
+def _build_docker(working_dir, project_name, docker_file: Optional[str] = None):
+    if docker_file is None:
+        docker_file = os.path.join(working_dir, "scripts", "docker", "Dockerfile")
+    docker_info = subprocess.check_output("docker info", shell=True).decode()
+    username = re.search(r'(?<=Username:\s)(\w+)', docker_info).group()
+    docker_tag = f"{username}/{project_name}:latest"
+    subprocess.run(f"docker buildx build -t {docker_tag} -f {docker_file} {working_dir} --push", shell=True)
+    return docker_tag
