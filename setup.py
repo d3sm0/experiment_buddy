@@ -2,7 +2,6 @@ from setuptools import setup
 
 install_requires = [
     'GitPython',
-    'tensorboardX',
     'matplotlib',
     'wandb',
     'fabric',
