@@ -21,13 +21,6 @@ from paramiko.ssh_exception import SSHException
 import experiment_buddy.utils
 
 try:
-    from orion.client import build_experiment
-except ImportError:
-    ORION_ENABLED = False
-else:
-    ORION_ENABLED = True
-
-try:
     import torch
 except ImportError:
     TORCH_ENABLED = False
