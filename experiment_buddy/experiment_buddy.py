@@ -2,12 +2,14 @@ import datetime
 import logging
 import os
 import re
+import subprocess
 import sys
 import time
 import warnings
 from typing import Dict, List, Optional, Tuple
 
 import cloudpickle
+import experiment_buddy.utils
 import fabric
 import git
 import matplotlib.pyplot as plt
@@ -17,8 +19,6 @@ import wandb.cli
 import yaml
 from invoke import UnexpectedExit
 from paramiko.ssh_exception import SSHException
-
-import experiment_buddy.utils
 
 try:
     import torch
@@ -201,12 +201,7 @@ def deploy(host: str = "", sweep_definition: Optional[str] = None, wandb_kwargs:
             wandb_kwargs["name"] = experiment_id + f"_{dtm}"
             return WandbWrapper(wandb_kwargs, local_tensorboard=None, debug=debug)
         else:
-            # ensure we have torch
-            ensure_torch_compatibility()
-            # ensure we can connect
-            ssh_session = _open_ssh_session(host)
-            # TODO: ensure remote venv exists from python side instead of bash. If not create it.
-            # get entrypoint. Warning, hydra changes directory, ensure is properly config.
+            # all this stuff is if backend=slurm
             git_url = git_repo.remotes[0].url
             entrypoint = os.path.relpath(sys.argv[0], git_repo.working_dir)
 
@@ -217,11 +212,22 @@ def deploy(host: str = "", sweep_definition: Optional[str] = None, wandb_kwargs:
             else:
                 # TODO: support for distributed training with torchrun
                 entrypoint = f"python -O -u {entrypoint}"
-            # commit to slurm and commit to git
-            scripts_folder, hash_commit = _commit(ssh_session, experiment_id, git_repo, **slurm_kwargs,
-                                                  tag_experiment=tag_experiment)
-            # launch jobs
-            send_jobs(ssh_session, scripts_folder, git_url, hash_commit, entrypoint)
+            # This should be if backend
+            if host == "aws":
+                docker_tag = _build_docker(git_repo.working_dir, project_name=wandb_kwargs["project"])
+                deploy_aws(experiment_id=experiment_id, docker_tag=docker_tag, cmd=entrypoint)
+            else:
+                # ensure we have torch
+                ensure_torch_compatibility()
+                # ensure we can connect
+                ssh_session = _open_ssh_session(host)
+                # TODO: ensure remote venv exists from python side instead of bash. If not create it.
+                # get entrypoint. Warning, hydra changes directory, ensure is properly config.
+                # commit to slurm and commit to git
+                scripts_folder, hash_commit = _commit(ssh_session, experiment_id, git_repo, **slurm_kwargs,
+                                                      tag_experiment=tag_experiment)
+                # launch jobs
+                send_jobs(ssh_session, scripts_folder, git_url, hash_commit, entrypoint)
             sys.exit()
 
     return logger
@@ -412,3 +418,78 @@ def git_sync(experiment_id, repo: git.Repo) -> str:
     finally:
         repo.git.checkout(active_branch)
     return git_hash
+
+
+def _build_docker(working_dir, project_name):
+    assert os.path.join(working_dir, "Dockerfile"), f"Dockerfile not found"
+    docker_info = subprocess.check_output("docker info", shell=True).decode()
+    username = re.search(r'(?<=Username:\s)(\w+)', docker_info).group()
+    docker_tag = f"{username}/{project_name}"
+    subprocess.run(
+        f"docker buildx build -t {docker_tag} -f Dockerfile {working_dir} --push", shell=True)
+    return docker_tag
+
+
+def deploy_aws(experiment_id, docker_tag, cmd, container_overrides: Optional[Dict[str, str]] = None, deregister=False,
+               compute_environment="gpu"):
+    try:
+        import boto3
+        import requests.utils
+    except ImportError:
+        raise ImportError(f"Install and configure aws cli. Install boto3 requirement")
+    vcpus = 8
+    memory = int(16 * 1000)  # in gb
+    user, docker_handle = docker_tag.split("/")
+    project_name, version = docker_handle.split(":")
+    # region = subprocess.run(["aws", "configure", "get", "region"], capture_output=True).stdout.decode().strip()
+    client = boto3.client("batch")
+    if compute_environment not in client.list_compute_environments()["computeEnvironmentNames"]:
+        print("Creating compute environment")
+        return
+    queue_name = f"{project_name}-queue"
+    if queue_name not in client.list_job_queues()["jobQueueNames"]:
+        response = client.create_job_queue(
+            jobQueueName=queue_name,
+            state='enabled',
+            priority=1,
+            computeEnvironmentOrder=[
+                {
+                    'order': 1,
+                    'computeEnvironment': compute_environment
+                },
+            ],
+        )
+        print(response)
+    if project_name not in client.list_job_definitions()["jobDefinitionNames"]:
+        response = client.register_job_definition(jobDefinitionName=project_name,
+                                                  type="container",
+                                                  containerProperties={"image": docker_tag,
+                                                                       "vcpus": vcpus,
+                                                                       "memory": memory,
+                                                                       "command": ["/bin/bash"]}
+                                                  )
+        print(response)
+    wandb_key = requests.utils.get_netrc_auth("https://api.wandb.ai")[-1]
+    print(wandb_key)
+
+    default_container = {
+        "command": ["/bin/bash", "-c", cmd],
+        "environment": [
+            {"name": "WANDB_API_KEY", "value": wandb_key},
+        ],
+        "resourceRequirements": [{"value": "1", "type": "GPU"}, {"value": str(memory), "type": "MEMORY"},
+                                 {"value": str(vcpus), "type": "VCPU"}],
+    }
+    if container_overrides is not None:
+        default_container.update(container_overrides)
+
+    response = client.submit_job(jobName=experiment_id,
+                                 jobQueue=f"{project_name}_queue",
+                                 jobDefinition=project_name,
+                                 containerOverrides=default_container,
+                                 retryStrategy={"attempts": 1}, timeout={"attemptDurationSeconds": 60 * 60})
+    print(response)
+
+    if deregister:
+        response = client.deregister_job_definition(jobDefinition=project_name)
+        print(response)
