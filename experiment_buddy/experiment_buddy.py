@@ -21,13 +21,6 @@ from paramiko.ssh_exception import SSHException
 import experiment_buddy.utils
 
 try:
-    from orion.client import build_experiment
-except ImportError:
-    ORION_ENABLED = False
-else:
-    ORION_ENABLED = True
-
-try:
     import torch
 except ImportError:
     TORCH_ENABLED = False
@@ -419,30 +412,3 @@ def git_sync(experiment_id, repo: git.Repo) -> str:
     finally:
         repo.git.checkout(active_branch)
     return git_hash
-
-# def git_sync(experiment_id: str, git_repo: git.Repo) -> str:
-#    if any(url.lower().startswith('https://') for url in git_repo.remote('origin').urls):
-#        raise Exception("Can't use HTTPS urls for your project, please, switch to GIT urls\n"
-#                        "Look here for more infos https://docs.github.com/en/github/getting-started-with-github/"
-#                        "getting-started-with-git/managing-remote-repositories#changing-a-remote-repositorys-url")
-#    # TODO: use gitpython
-#    active_branch = git_repo.active_branch.name
-#    try:
-#        subprocess.check_output(f"git checkout --detach", shell=True)  # move changest to snapshot branch
-#        subprocess.check_output(f"git add .", shell=True)
-#
-#        try:
-#            subprocess.check_output(f"git commit --no-verify -m '{experiment_id}'", shell=True)
-#        except subprocess.CalledProcessError as e:
-#            git_hash = git_repo.commit().hexsha
-#            # Ensure the code is remote
-#            subprocess.check_output(f"git push {git_repo.remotes[0]} {active_branch}", shell=True)
-#        else:
-#            git_hash = git_repo.commit().hexsha
-#            tag_name = f"snapshot/{active_branch}/{git_hash}"
-#            subprocess.check_output(f"git tag {tag_name}", shell=True)
-#            subprocess.check_output(f"git push {git_repo.remotes[0]} {tag_name}", shell=True)  # send to online repo
-#            subprocess.check_output(f"git reset HEAD~1", shell=True)  # untrack the changes
-#    finally:
-#        subprocess.check_output(f"git checkout {active_branch}", shell=True)
-#    return git_hash
